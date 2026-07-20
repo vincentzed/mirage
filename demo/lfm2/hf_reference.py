@@ -7,6 +7,10 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--model", default="LiquidAI/LFM2.5-230M")
 parser.add_argument("--prompt", default="Give me a short introduction to large language model.")
 parser.add_argument("--max-new-tokens", type=int, default=256)
+parser.add_argument("--no-extra-bos", action="store_true",
+                    help="tokenize with add_special_tokens=False (the chat "
+                    "template already contains <|startoftext|>; matches "
+                    "MPK's load_new_request tokenization)")
 args = parser.parse_args()
 
 tok = AutoTokenizer.from_pretrained(args.model)
@@ -16,7 +20,8 @@ messages = [{"role": "user", "content": args.prompt}]
 text = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 print("=== templated prompt ===")
 print(repr(text))
-ids = tok(text, return_tensors="pt").input_ids.to("cuda")
+ids = tok(text, return_tensors="pt",
+          add_special_tokens=not args.no_extra_bos).input_ids.to("cuda")
 print("prompt tokens:", ids.shape[1])
 out = model.generate(ids, max_new_tokens=args.max_new_tokens, do_sample=False,
                      temperature=None, top_p=None, top_k=None)

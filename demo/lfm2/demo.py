@@ -103,6 +103,7 @@ if __name__ == "__main__":
 
     for r in range(total_num_requests):
         generated_ids = tokens[r, : step[r] + 1]
+        print("token ids:", generated_ids.tolist())
         print(mpk.decode(generated_ids))
 
     generated = step.max().item() + 1 - prompt_lengths[0].item()

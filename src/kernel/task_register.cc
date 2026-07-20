@@ -2652,8 +2652,11 @@ int TaskRegister::register_moe_linear_sm100_task(
 
   mirage::transpiler::CodeKeeper code;
   code.inc_indent();
-  // MoE constant:
-  int expert_stride = (w13_linear) ? 10 : 8;
+  // Expert stride must match grid_dim.x so each CTA processes a distinct
+  // set of activated experts (same scheme as the FP8 variant); the old
+  // hard-coded 10/8 made CTAs beyond the stride redundantly re-process
+  // experts (benign but wasteful).
+  int expert_stride = bgraph.grid_dim.x;
   // define MMA
   constexpr int MMA_M = 128;
   constexpr int MMA_N = 16;
