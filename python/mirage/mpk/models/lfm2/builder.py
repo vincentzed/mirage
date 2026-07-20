@@ -106,6 +106,12 @@ class Lfm2Builder(GraphBuilder):
         ) * self.head_dim
 
         self.num_layers = config.num_hidden_layers
+        import os as _os
+        _trunc = int(_os.environ.get("LFM2_TRUNC_LAYERS", "0"))
+        if _trunc > 0:
+            # debug aid: build only the first K layers (compare against an
+            # identically truncated HF model)
+            self.num_layers = min(self.num_layers, _trunc)
         self.layer_types = list(config.layer_types)
         self.conv_l = config.conv_L_cache
         assert not getattr(config, "conv_bias", False), \
