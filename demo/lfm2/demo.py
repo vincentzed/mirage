@@ -22,12 +22,9 @@ if __name__ == "__main__":
         help="HF model name (LiquidAI/LFM2.5-230M or LiquidAI/LFM2.5-8B-A1B)")
     parser.add_argument("--prompt", type=str,
                         default="Give me a short introduction to large language model.")
-    # NOTE: LFM2.5-8B-A1B (GQA 4:1) currently requires max_num_batched_tokens
-    # of 8: the SM100 attention kernel miscomputes prefill for
-    # NUM_QO_PER_KV=4 with MAX_TOKENS > 8 (see tests/runtime_python/
-    # test_mode/test_lfm2_attention_testmode.py). The 2:1 LFM2.5-230M is
-    # correct up to 64.
-    parser.add_argument("--max-num-batched-tokens", default=None, type=int)
+    # NOTE: for the MoE model, max_num_batched_tokens must be a multiple of
+    # 16 (or <=16 dividing 16) and <=64 — see Lfm2MoeBuilder.
+    parser.add_argument("--max-num-batched-tokens", default=64, type=int)
     parser.add_argument("--max-num-batched-requests", default=1, type=int)
     parser.add_argument("--page-size", default=4096, type=int)
     parser.add_argument("--max-num-pages", default=16, type=int)
@@ -38,8 +35,6 @@ if __name__ == "__main__":
         "--no-use-cutlass-kernel", action="store_false",
         dest="use_cutlass_kernel", default=True)
     args = parser.parse_args()
-    if args.max_num_batched_tokens is None:
-        args.max_num_batched_tokens = 8 if "8B" in args.model else 64
 
     print("Input arguments:", args)
 

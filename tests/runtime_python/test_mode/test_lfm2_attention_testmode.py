@@ -69,21 +69,23 @@ def attention_ref(qkv, num_q_heads, num_kv_heads, head_dim,
         torch.bfloat16)
 
 
-def run_case(num_q_heads, num_kv_heads, head_dim=64, T=19, theta=5e6):
+def run_case(num_q_heads, num_kv_heads, head_dim=64, T=19, theta=5e6,
+             max_seq_length=4096, max_num_pages=1, mbt=None):
     device = "cuda"
     dtype = torch.bfloat16
     page_size = 4096
     fused = (num_q_heads + 2 * num_kv_heads) * head_dim
+    mbt = mbt if mbt is not None else T
 
     torch.manual_seed(0)
-    qkv = torch.randn(T, fused, dtype=dtype, device=device)
+    qkv = torch.randn(mbt, fused, dtype=dtype, device=device)
     q_norm_w = torch.randn(head_dim, dtype=dtype, device=device).abs() + 0.5
     k_norm_w = torch.randn(head_dim, dtype=dtype, device=device).abs() + 0.5
     cos, sin = rope_tables(4096, head_dim, theta, device)
-    k_cache = torch.zeros(1, page_size, num_kv_heads, head_dim,
+    k_cache = torch.zeros(max_num_pages, page_size, num_kv_heads, head_dim,
                           dtype=dtype, device=device)
     v_cache = torch.zeros_like(k_cache)
-    out = torch.zeros(T, num_q_heads * head_dim, dtype=dtype, device=device)
+    out = torch.zeros(mbt, num_q_heads * head_dim, dtype=dtype, device=device)
 
     num_workers, num_schedulers = mirage.get_configurations_from_gpu(0)
     params = PersistentKernel.get_default_init_parameters()
@@ -92,12 +94,13 @@ def run_case(num_q_heads, num_kv_heads, head_dim=64, T=19, theta=5e6):
     params["num_local_schedulers"] = num_schedulers
     params["mpi_rank"] = 0
     params["world_size"] = 1
-    params["max_num_batched_tokens"] = T
-    params["max_seq_length"] = 4096
-    params["max_num_pages"] = 1
+    params["max_num_batched_tokens"] = mbt
+    params["max_seq_length"] = max_seq_length
+    params["max_num_pages"] = max_num_pages
     params["page_size"] = page_size
     params["meta_tensors"] = {
-        "tokens": torch.zeros(1, 4096, dtype=torch.int64, device=device),
+        "tokens": torch.zeros(1, max_seq_length, dtype=torch.int64,
+                              device=device),
         "step": torch.zeros(1, dtype=torch.int32, device=device),
         "qo_indptr_buffer": torch.tensor([0, T], dtype=torch.int32,
                                          device=device),
@@ -132,21 +135,33 @@ def run_case(num_q_heads, num_kv_heads, head_dim=64, T=19, theta=5e6):
     pk()
     torch.cuda.synchronize()
 
-    ref = attention_ref(qkv, num_q_heads, num_kv_heads, head_dim,
+    ref = attention_ref(qkv[:T], num_q_heads, num_kv_heads, head_dim,
                         q_norm_w, k_norm_w, cos, sin)
-    diff = (out.float() - ref.float()).abs()
-    print(f"GQA {num_q_heads}:{num_kv_heads} hd{head_dim} T{T}: "
+    diff = (out[:T].float() - ref.float()).abs()
+    print(f"GQA {num_q_heads}:{num_kv_heads} hd{head_dim} T{T} mbt{mbt} "
+          f"seq{max_seq_length} pages{max_num_pages}: "
           f"max diff {diff.max().item():.5f} "
           f"(worst row {diff.max(dim=1).values.argmax().item()})")
     return diff.max().item()
 
 
 if __name__ == "__main__":
-    cases = [(16, 8), (32, 8)]
-    if len(sys.argv) > 1:
-        cases = [tuple(map(int, sys.argv[1].split(":")))]
-    ok = True
-    for q, kv in cases:
-        d = run_case(q, kv)
-        ok &= d < 0.05
-    print("PASSED" if ok else "FAILED")
+    if len(sys.argv) > 1 and sys.argv[1] == "partial":
+        # actual tokens < MAX_TOKENS (mbt), as in real serving
+        cases = [(32, 8, 19, 32), (32, 8, 19, 64), (16, 8, 19, 64)]
+        ok = True
+        for q, kv, T, mbt in cases:
+            d = run_case(q, kv, T=T, mbt=mbt, max_seq_length=512,
+                         max_num_pages=16)
+            ok &= d < 0.05
+        print("PASSED" if ok else "FAILED")
+    else:
+        # (q_heads, kv_heads, max_seq_length, max_num_pages); the seq-512
+        # cases mirror the demo's serving config exactly
+        cases = [(16, 8, 4096, 1), (32, 8, 4096, 1),
+                 (16, 8, 512, 16), (32, 8, 512, 16)]
+        ok = True
+        for q, kv, seq, pages in cases:
+            d = run_case(q, kv, max_seq_length=seq, max_num_pages=pages)
+            ok &= d < 0.05
+        print("PASSED" if ok else "FAILED")

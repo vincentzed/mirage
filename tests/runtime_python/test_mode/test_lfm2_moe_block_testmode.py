@@ -35,13 +35,13 @@ def moe_block_ref(x, w_router, expert_bias, w13, w2, residual, top_k=4):
     return out.to(torch.bfloat16), sel, weights
 
 
-def test_lfm2_moe_block(pad_to=None, garbage="nan"):
+def test_lfm2_moe_block(pad_to=None, garbage="nan", T=19):
     """pad_to: emulate max_num_batched_tokens > real token count; rows
     [T, pad_to) of every activation get garbage content, like the demo's
     uninitialized padding rows. garbage: 'nan' | 'inf' | 'big'."""
     device = "cuda"
     dtype = torch.bfloat16
-    T, H, E, I, TOPK = 19, 2048, 32, 1792, 4
+    H, E, I, TOPK = 2048, 32, 1792, 4
     MBT = pad_to if pad_to is not None else T
 
     torch.manual_seed(0)
@@ -148,6 +148,19 @@ def test_lfm2_moe_block(pad_to=None, garbage="nan"):
     w_diff = (topk_weights[:T]
               - ref_weights.to(topk_weights.dtype)).abs().max().item()
     print(f"topk weight max diff (may include near-tie rows): {w_diff}")
+    # direct w13 output check on rows whose routing matches the reference
+    ref_mid = torch.zeros(T, TOPK, 2 * I, dtype=dtype, device=device)
+    for t in range(T):
+        for k in range(TOPK):
+            e = ref_sel[t, k].item()
+            ref_mid[t, k] = (x[t].float() @ w13[e].float().t()).to(dtype)
+    ok_rows = [t for t in range(T)
+               if set(mpk_sel[t]) == set(ref_sel[t].tolist())]
+    if ok_rows:
+        sel_idx = torch.tensor(ok_rows, device=device)
+        mid_diff = (moe_mid[:T][sel_idx].float()
+                    - ref_mid[sel_idx].float()).abs().max().item()
+        print(f"moe_mid (w13 out) max diff on matched rows: {mid_diff}")
     out_diff = (out[:T].float() - ref_out.float()).abs().max().item()
     print(f"output max diff: {out_diff}")
     finite = torch.isfinite(out[:T].float()).all().item()
@@ -161,9 +174,15 @@ def test_lfm2_moe_block(pad_to=None, garbage="nan"):
 
 
 if __name__ == "__main__":
-    test_lfm2_moe_block()
-    a = test_lfm2_moe_block(pad_to=64, garbage="nan")
-    b = test_lfm2_moe_block(pad_to=64, garbage="inf")
-    c = test_lfm2_moe_block(pad_to=64, garbage="big")
-    print("nan-vs-inf padding changed real rows:",
-          (a - b).abs().max().item())
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "tiles":
+        # bisect the token-tile boundary of the bf16 group-GEMM
+        for T in (8, 16, 17, 19, 33):
+            test_lfm2_moe_block(T=T)
+    else:
+        test_lfm2_moe_block()
+        a = test_lfm2_moe_block(pad_to=64, garbage="nan")
+        b = test_lfm2_moe_block(pad_to=64, garbage="inf")
+        c = test_lfm2_moe_block(pad_to=64, garbage="big")
+        print("nan-vs-inf padding changed real rows:",
+              (a - b).abs().max().item())

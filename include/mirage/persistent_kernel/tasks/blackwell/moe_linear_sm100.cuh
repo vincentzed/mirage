@@ -540,14 +540,20 @@ __device__ __forceinline__ void
             int32_t token_idx = n_tile * MMA_N + lane_idx / cp_async_group_size;
             int32_t topk_idx = tRoutingIndex(token_idx);
             if (token_idx < BATCH_SIZE && topk_idx > 0) {
+              // tBgB layout: ((atom), rest_m, rest_k, n_tiles, k_tiles
+              // [, topk]); tBsB's 4th mode is a size-1 stride-0 dummy.
+              // The n-tile mode must be indexed per iteration: the old
+              // whole-mode slice made cute::copy truncate to n_tile 0, so
+              // every tile loaded token block 0 and all outputs beyond
+              // MMA_N tokens were computed from the wrong activations.
               if constexpr (W13_LINEAR) {
                 cute::copy(copyB,
-                           tBgB(_, _, _, _, k_tile),
-                           tBsB(_, _, _, _, smem_wr_buffer));
+                           tBgB(_, _, _, n_tile, k_tile),
+                           tBsB(_, _, _, 0, smem_wr_buffer));
               } else {
                 cute::copy(copyB,
-                           tBgB(_, _, _, _, k_tile, topk_idx - 1),
-                           tBsB(_, _, _, _, smem_wr_buffer));
+                           tBgB(_, _, _, n_tile, k_tile, topk_idx - 1),
+                           tBsB(_, _, _, 0, smem_wr_buffer));
               }
             }
 

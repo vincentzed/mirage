@@ -35,12 +35,20 @@ python hf_bench.py --model LiquidAI/LFM2.5-230M       # HF latency baseline
 3. **Blackwell-family support** — compute capability 10.x now maps to the SM100
    task set, compiled as `sm_100f` when the device is not sm_100 (e.g. B300
    sm_103, which cannot load `sm_100a` cubins).
-4. **Fixes along the way** — `topk_sigmoid_sm100` warp mask generalized to any
-   `THREADS_PER_ROW` (required for 32-expert layouts); bf16 MoE group-GEMM
-   `expert_stride` now follows `grid_dim.x` like the FP8 variant instead of a
-   hard-coded 10/8; `rmsnorm_layer` takes an optional `eps` (LFM2 uses 1e-5);
-   offline-mode `MPK` wrapper no longer crashes on absent online-only pinned
-   buffers.
+4. **Upstream fixes found by this port**
+   - `moe_linear_sm100.cuh` (bf16 MoE group-GEMM): the activation
+     `cute::copy` sliced the token-tile mode whole against a size-1 dummy
+     destination mode, so every 16-token tile silently loaded tile 0's
+     activations — corrupting all outputs beyond the first 16 batched
+     tokens. Now indexed per `n_tile`. (DeepSeek uses the FP8 variants, so
+     this path was upstream-untested in real models.)
+   - Same file: `expert_stride` now follows `grid_dim.x` like the FP8
+     variant instead of a hard-coded 10/8 (removed ~3x redundant expert
+     processing; 74 → 26 ms/token on the 8B).
+   - `topk_sigmoid_sm100` warp mask generalized to any `THREADS_PER_ROW`
+     (required for 32-expert layouts).
+   - `rmsnorm_layer` takes an optional `eps` (LFM2 uses 1e-5); offline-mode
+     `MPK` wrapper no longer crashes on absent online-only pinned buffers.
 
 ## Verification (B300, sm_103)
 
@@ -50,14 +58,28 @@ python hf_bench.py --model LiquidAI/LFM2.5-230M       # HF latency baseline
   pipeline test (`tests/runtime_python/test_mode/test_lfm2_conv_testmode.py`).
 - 230M end-to-end: greedy outputs match HF exactly on short prompts and are
   prefix-exact (~35 tokens) before benign bf16 tie divergence on longer ones.
-- 8B-A1B end-to-end: coherent `<think>`-style reasoning outputs.
+- 8B-A1B end-to-end (mbt=64): first ~22 greedy tokens match HF exactly
+  (`<think>` onward), then benign bf16 divergence; coherent reasoning +
+  answer. test_mode suites cover the attention shapes (16:8/32:8 @ hd64,
+  partial-token batches), the full MoE block (incl. NaN/Inf padding-row
+  robustness), and a composed attention+MoE layer replica.
+
+## Performance (B300, greedy, batch 1, prompt ~20 tokens)
+
+| Model | MPK megakernel | HF transformers eager | Speedup |
+|---|---|---|---|
+| LFM2.5-230M | 0.83 ms/token | 17.8 ms/token | ~21x |
+| LFM2.5-8B-A1B | 25.4 ms/token | 27.3 ms/token | ~1.07x |
+
+The 8B decode remains bound by the bf16 MoE group-GEMM, which is not
+perf-tuned upstream (DeepSeek's production path is FP8).
 
 ## Known limitations
 
 - Single GPU only (no TP sharding for LFM2 yet).
-- MoE routing kernel covers ≤64 batched tokens at 32 experts
-  (`max_num_batched_tokens <= 64`).
-- The bf16 MoE group-GEMM (`moe_linear_sm100`) is not perf-tuned upstream
-  (DeepSeek uses the FP8 variants); 8B-A1B decode latency is bound by it.
+- MoE model: `max_num_batched_tokens` must be ≤64 (routing kernel row
+  coverage at 32 experts) and a multiple of 16 (or ≤16 dividing 16): the
+  group-GEMM floor-tiles tokens by MMA_N=16 and would drop a partial tail
+  tile.
 - Attention QK-norm eps is hard-coded 1e-6 in-kernel (LFM2 uses 1e-5); the
   difference is far below bf16 resolution.

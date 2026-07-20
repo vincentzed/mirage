@@ -491,8 +491,13 @@ class Lfm2MoeBuilder(Lfm2Builder):
         self.routed_scaling_factor = float(config.routed_scaling_factor)
         # topk_sigmoid_task_impl covers 8 rows per warp at 32 experts, so a
         # single-task routing launch handles at most 64 batched tokens
-        assert self.mpk.max_num_batched_tokens <= 64, (
+        mbt = self.mpk.max_num_batched_tokens
+        assert mbt <= 64, (
             "LFM2.5 MoE routing currently requires max_num_batched_tokens<=64")
+        # the bf16 MoE group-GEMM tiles tokens in blocks of MMA_N=16 with
+        # floor division, dropping a partial tail tile
+        assert mbt % 16 == 0 or (mbt <= 16 and 16 % mbt == 0), (
+            "max_num_batched_tokens must be a multiple of 16 (or divide 16)")
         super().build_from_dict(state_dict, with_lm_head)
 
     def new_intermediate_tensors(self):
