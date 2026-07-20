@@ -64,15 +64,21 @@ python hf_bench.py --model LiquidAI/LFM2.5-230M       # HF latency baseline
   partial-token batches), the full MoE block (incl. NaN/Inf padding-row
   robustness), and a composed attention+MoE layer replica.
 
-## Performance (B300, greedy, batch 1, prompt ~20 tokens)
+## Performance (B300, greedy, batch 1)
 
-| Model | MPK megakernel | HF transformers eager | Speedup |
+Warmed steady-state E2E, exactly 32 prompt tokens in / 32 generated out
+(`mpk_e2e_bench.py` / `hf_e2e_bench.py`, 3 warmup + 10 timed iterations):
+
+| Model | MPK megakernel E2E | HF transformers E2E | Speedup |
 |---|---|---|---|
-| LFM2.5-230M | 0.83 ms/token | 17.8 ms/token | ~21x |
-| LFM2.5-8B-A1B | 25.4 ms/token | 27.3 ms/token | ~1.07x |
+| LFM2.5-230M | **30.9 ms** (±0.05) | 126.8 ms | **4.1x** |
+| LFM2.5-8B-A1B | 863 ms (±3) | 296.9 ms | 0.34x |
 
-The 8B decode remains bound by the bf16 MoE group-GEMM, which is not
-perf-tuned upstream (DeepSeek's production path is FP8).
+The 230M runs ~0.94 ms per iteration — launch-overhead-free megakernel
+execution. The 8B is bound by the bf16 MoE group-GEMM (~26 ms/decode step),
+which upstream never perf-tuned (DeepSeek's production path is FP8); a tuned
+or FP8 expert GEMM is the clear next step. First-run cold cost is the
+one-time megakernel nvcc compile (~2-4 min per model/config).
 
 ## Known limitations
 
