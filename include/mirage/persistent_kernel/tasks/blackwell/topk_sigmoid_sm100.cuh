@@ -158,9 +158,15 @@ __device__ __forceinline__ void topk_sigmoid_task_impl(
 
   int const thread_row_in_warp = lane_idx / THREADS_PER_ROW;
   int const thread_row = warp_base_row + thread_row_in_warp;
-  uint32_t const warp_mask = (num_rows % 2 == 1 && thread_row == num_rows - 1)
-                                 ? 0x0000ffff
-                                 : 0xffffffff;
+  // All shuffles below are segmented with width THREADS_PER_ROW, and all
+  // lanes of a segment share the same thread_row guard, so the participating
+  // mask is exactly this segment's lanes. (A row-count-based mask breaks for
+  // THREADS_PER_ROW < 16, e.g. 32 experts.)
+  uint32_t const warp_mask =
+      (THREADS_PER_ROW == WARP_SIZE_SIGMOID)
+          ? 0xffffffffu
+          : (((1u << THREADS_PER_ROW) - 1u)
+             << (thread_row_in_warp * THREADS_PER_ROW));
 
   if (thread_row < num_rows) {
 

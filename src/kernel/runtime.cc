@@ -337,7 +337,8 @@ void register_mugraph(
                 (task_type == TASK_PAGED_ATTENTION_SPLIT_KV_SM100) ||
                 (TASK_PAGED_ATTENTION_SPLIT_KV_MERGE_SM100) ||
                 (task_type == TASK_PAGED_ATTENTION_SPLIT_KV_HOPPER) ||
-                (task_type == TASK_ATTN_SM100)) {
+                (task_type == TASK_ATTN_SM100) ||
+                (task_type == TASK_LFM2_CONV)) {
               // Note that we assume grid_dim.x corresponds to
               // the request dimension
               task.task_metadata.request_id = bid.x;
@@ -1759,6 +1760,7 @@ TaskGraphResult print_task_graph(
   task_type_to_name[TASK_RMS_NORM_LINEAR] = "TASK_RMS_NORM_LINEAR";
   task_type_to_name[TASK_ATTENTION_1] = "TASK_ATTENTION_1";
   task_type_to_name[TASK_SILU_MUL] = "TASK_SILU_MUL";
+  task_type_to_name[TASK_LFM2_CONV] = "TASK_LFM2_CONV";
   task_type_to_name[TASK_IDENTITY] = "TASK_IDENTITY";
   task_type_to_name[TASK_SILU_MUL_LINEAR_WITH_RESIDUAL] =
       "TASK_SILU_MUL_LINEAR_WITH_RESIDUAL";

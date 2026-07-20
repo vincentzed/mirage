@@ -495,6 +495,10 @@ void Graph::register_task(char const *task_type, std::vector<int> params) {
     int variant_id =
         task_register->register_silu_mul_task(customized->bgraph, params);
     task_config[op] = std::make_tuple(1, 1, TASK_SILU_MUL, variant_id);
+  } else if (name == "lfm2_conv") {
+    int variant_id =
+        task_register->register_lfm2_conv_task(customized->bgraph, params);
+    task_config[op] = std::make_tuple(3, 1, TASK_LFM2_CONV, variant_id);
   } else if (name == "identity") {
     int variant_id =
         task_register->register_identity_task(customized->bgraph, params);

@@ -1,5 +1,6 @@
 // Ampere task impls
 #include "tasks/ampere/embedding.cuh"
+#include "tasks/ampere/lfm2_conv.cuh"
 #include "tasks/ampere/merge_splitkv.cuh"
 #include "tasks/ampere/multitoken_paged_attention_split_kv.cuh"
 #include "tasks/ampere/silu_mul.cuh"

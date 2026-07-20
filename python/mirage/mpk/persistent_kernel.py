@@ -654,16 +654,21 @@ class PersistentKernel:
         output: DTensor,
         grid_dim: tuple,
         block_dim: tuple,
+        eps: float = 1e-6,
     ):
         # Currently assume that the input/output are 2D tensors
         assert input.num_dims == 2
         assert output.num_dims == 2
+        params = []
+        if eps != 1e-6:
+            import struct
+            params = [struct.unpack("i", struct.pack("f", eps))[0]]
         tb_graph = TBGraph(CyTBGraph(grid_dim, block_dim, 1, 64))
         tb_graph.new_input(input, (0, -1, -1), 1, True)
         tb_graph.new_input(weight, (-1, -1, -1), 0, True)
         tb_graph.new_input(output, (0, -1, -1), 1, True)
         self.kn_graph.customized([input, weight, output], tb_graph)
-        self.kn_graph.register_task(tb_graph, "rmsnorm_hopper" if self.target_cc >= 90 else "rmsnorm")
+        self.kn_graph.register_task(tb_graph, "rmsnorm_hopper" if self.target_cc >= 90 else "rmsnorm", params)
 
     def rmsnorm_linear_layer(
         self,
@@ -1968,6 +1973,45 @@ class PersistentKernel:
         tb_graph.new_input(output, (1, -1, -1), 1, True)
         self.kn_graph.customized([input, output], tb_graph)
         self.kn_graph.register_task(tb_graph, "silu_mul" if self.target_cc == 90 else "silu_mul")
+
+    def lfm2_conv_layer(
+        self,
+        input: DTensor,
+        conv_weight: DTensor,
+        conv_state: DTensor,
+        output: DTensor,
+        grid_dim: tuple,
+        block_dim: tuple,
+    ):
+        # LFM2 gated short convolution (see tasks/ampere/lfm2_conv.cuh).
+        # input: (num_tokens, 3 * hidden) fused in_proj output; each channel
+        #     group g (grid_dim.y groups) holds [B_g | C_g | x_g], produced by
+        #     interleaving the in_proj weight rows with shuffle_tensors
+        # conv_weight: (hidden, conv_l) depthwise causal conv weights
+        # conv_state: (max_num_batched_requests, hidden, conv_l - 1) rolling
+        #     cache of the last conv_l - 1 Bx values per request; read and
+        #     updated in place by the task
+        # output: (num_tokens, hidden)
+        assert input.num_dims == 2
+        assert conv_weight.num_dims == 2
+        assert conv_state.num_dims == 3
+        assert output.num_dims == 2
+        hidden = output.dim(1)
+        conv_l = conv_weight.dim(1)
+        assert input.dim(1) == 3 * hidden
+        assert conv_weight.dim(0) == hidden
+        assert conv_state.dim(0) == self.max_num_batched_requests
+        assert conv_state.dim(1) == hidden
+        assert conv_state.dim(2) == conv_l - 1
+        assert grid_dim[0] == self.max_num_batched_requests
+        assert hidden % grid_dim[1] == 0
+        tb_graph = TBGraph(CyTBGraph(grid_dim, block_dim, 1, 64))
+        tb_graph.new_input(input, (-1, 1, -1), -1, True)
+        tb_graph.new_input(conv_weight, (-1, 0, -1), -1, True)
+        tb_graph.new_input(conv_state, (-1, 1, -1), -1, True)
+        tb_graph.new_input(output, (-1, 1, -1), -1, True)
+        self.kn_graph.customized([input, conv_weight, conv_state, output], tb_graph)
+        self.kn_graph.register_task(tb_graph, "lfm2_conv")
 
     def identity_layer(
         self,

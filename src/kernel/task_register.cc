@@ -90,7 +90,12 @@ int TaskRegister::register_embedding_task(threadblock::Graph const &bgraph,
 
 int TaskRegister::register_rmsnorm_task(threadblock::Graph const &bgraph,
                                         std::vector<int> const &params) {
-  assert(params.size() == 0);
+  // params[0] (optional): eps float bits (defaults to 1e-6)
+  assert(params.size() <= 1);
+  float eps = 1e-6f;
+  if (params.size() == 1) {
+    memcpy(&eps, &params[0], sizeof(float));
+  }
   std::vector<tb::TBInputOp *> input_ops;
   std::vector<tb::TBInputOp *> output_ops;
   int num_inputs = 2;
@@ -119,7 +124,7 @@ int TaskRegister::register_rmsnorm_task(threadblock::Graph const &bgraph,
   code.e("    task_desc->input_ptrs[0],");
   code.e("    task_desc->input_ptrs[1],");
   code.e("    task_desc->output_ptrs[0],");
-  code.e("    1e-6f);");
+  code.e("    $f);", eps);
   return register_task_variant(TASK_RMS_NORM, code.to_string());
 }
 
@@ -521,6 +526,60 @@ int TaskRegister::register_silu_mul_task(threadblock::Graph const &bgraph,
   code.e("    task_desc->output_ptrs[0],");
   code.e("    runtime_config.qo_indptr_buffer[MPK_MAX_NUM_BATCHED_REQUESTS]);");
   return register_task_variant(TASK_SILU_MUL, code.to_string());
+}
+
+int TaskRegister::register_lfm2_conv_task(threadblock::Graph const &bgraph,
+                                          std::vector<int> const &params) {
+  assert(params.size() == 0);
+  std::vector<tb::TBInputOp *> input_ops;
+  std::vector<tb::TBInputOp *> output_ops;
+  int num_inputs = 3; // bcx, conv_weight, conv_state
+  int num_outputs = 1;
+  assert(bgraph.operators.size() == (size_t)num_inputs + num_outputs);
+  for (auto const &op : bgraph.operators) {
+    assert(op->op_type == mirage::type::TB_INPUT_OP);
+    if (input_ops.size() < (size_t)num_inputs) {
+      input_ops.push_back(static_cast<tb::TBInputOp *>(op));
+    } else {
+      output_ops.push_back(static_cast<tb::TBInputOp *>(op));
+    }
+  }
+  // Per-task channel slice from the output STensor
+  assert(output_ops[0]->output_tensors[0].num_dims == 2);
+  int channels = output_ops[0]->output_tensors[0].dim[1];
+  // Conv kernel size from the weight tensor (channels, conv_l)
+  assert(input_ops[1]->dtensor.num_dims == 2);
+  int conv_l = input_ops[1]->dtensor.dim[1];
+  assert(input_ops[1]->output_tensors[0].dim[0] == channels);
+  // Fused BCx input carries [B | C | x] per channel group
+  assert(input_ops[0]->dtensor.num_dims == 2);
+  assert(input_ops[0]->output_tensors[0].dim[1] == 3 * channels);
+  // Conv state cache: (max_num_requests, hidden, conv_l - 1)
+  assert(input_ops[2]->dtensor.num_dims == 3);
+  assert(input_ops[2]->dtensor.dim[2] == conv_l - 1);
+  assert(input_ops[2]->output_tensors[0].dim[1] == channels);
+  int bcx_stride = input_ops[0]->dtensor.dim[1];
+  int y_stride = output_ops[0]->dtensor.dim[1];
+  int w_stride = input_ops[1]->dtensor.dim[1];
+  int state_req_stride =
+      input_ops[2]->dtensor.dim[1] * input_ops[2]->dtensor.dim[2];
+  mirage::transpiler::CodeKeeper code;
+  code.inc_indent();
+  code.e("kernel::lfm2_conv_task_impl<bfloat16, $, $, $, $, $, $>(",
+         channels,
+         conv_l,
+         bcx_stride,
+         y_stride,
+         w_stride,
+         state_req_stride);
+  code.e("    task_desc->input_ptrs[0],");
+  code.e("    task_desc->input_ptrs[1],");
+  code.e("    task_desc->input_ptrs[2],");
+  code.e("    task_desc->output_ptrs[0],");
+  code.e("    runtime_config.qo_indptr_buffer,");
+  code.e("    runtime_config.step,");
+  code.e("    task_desc->task_metadata.request_id);");
+  return register_task_variant(TASK_LFM2_CONV, code.to_string());
 }
 
 int TaskRegister::register_identity_task(threadblock::Graph const &bgraph,
@@ -1258,7 +1317,12 @@ int TaskRegister::register_paged_attention_hopper_task(
 
 int TaskRegister::register_rmsnorm_hopper_task(threadblock::Graph const &bgraph,
                                                std::vector<int> const &params) {
-  assert(params.size() == 0);
+  // params[0] (optional): eps float bits (defaults to 1e-6)
+  assert(params.size() <= 1);
+  float eps = 1e-6f;
+  if (params.size() == 1) {
+    memcpy(&eps, &params[0], sizeof(float));
+  }
   std::vector<tb::TBInputOp *> input_ops;
   std::vector<tb::TBInputOp *> output_ops;
   int num_inputs = 2;
@@ -1289,7 +1353,7 @@ int TaskRegister::register_rmsnorm_hopper_task(threadblock::Graph const &bgraph,
   code.e("    task_desc->input_ptrs[0],");
   code.e("    task_desc->input_ptrs[1],");
   code.e("    task_desc->output_ptrs[0],");
-  code.e("    1e-6f);");
+  code.e("    $f);", eps);
   return register_task_variant(TASK_RMS_NORM_HOPPER, code.to_string());
 }
 

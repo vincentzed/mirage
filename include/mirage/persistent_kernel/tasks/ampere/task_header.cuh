@@ -7,6 +7,7 @@
 #include "argmax.cuh"
 #include "embedding.cuh"
 #include "identity.cuh"
+#include "lfm2_conv.cuh"
 #include "multitoken_paged_attention.cuh"
 #include "reduction.cuh"
 #include "rmsnorm.cuh"
