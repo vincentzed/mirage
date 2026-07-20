@@ -254,6 +254,9 @@ class MPK:
             "pinned_inbox_tokens":     args.pinned_inbox_tokens,
             "pinned_rid_at_row":       args.pinned_rid_at_row,
         }
+        # Pinned ring buffers are only allocated for online serving; offline
+        # mode leaves them as None — drop them instead of crashing below.
+        meta_tensors = {k: v for k, v in meta_tensors.items() if v is not None}
         self.persistent_kernel = PersistentKernel(
             mode=args.mode,
             world_size=self.world_size,

@@ -287,8 +287,15 @@ def get_compile_command(
             "-DNDEBUG",
         ] + (["-DMIRAGE_ENABLE_PROFILER"] if profiling else [])
     elif target_cc == 100:
+        props = torch.cuda.get_device_properties(0)
+        if props.major == 10 and props.minor != 0:
+            # Blackwell family members other than sm_100 (e.g. sm_103 B300)
+            # cannot load sm_100a cubins; use the family-compatible target.
+            arch_flag = "-gencode=arch=compute_100f,code=sm_100f"
+        else:
+            arch_flag = "-gencode=arch=compute_100a,code=sm_100a"
         specific_cmd = [
-            "-gencode=arch=compute_100a,code=sm_100a",
+            arch_flag,
             "-DMPK_ENABLE_TMA",
             "-DMIRAGE_GRACE_BLACKWELL",
         ]
@@ -369,7 +376,13 @@ class PersistentKernel:
         }
         self.allocate_nvshmem_teams = 0
         # determine total number of requests for offline serving
-        self.target_cc = torch.cuda.get_device_properties(0).major * 10 + torch.cuda.get_device_properties(0).minor
+        props = torch.cuda.get_device_properties(0)
+        self.target_cc = props.major * 10 + props.minor
+        if props.major == 10:
+            # All Blackwell-family GPUs (sm_100 B200, sm_103 B300/GB300) use
+            # the SM100 task variants; get_compile_command picks sm_100a vs
+            # the family-compatible sm_100f based on the actual device.
+            self.target_cc = 100
 
         if test_mode:
             # Auto-allocate any meta tensors the test author didn't provide so
