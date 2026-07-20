@@ -71,8 +71,16 @@ Warmed steady-state E2E, exactly 32 prompt tokens in / 32 generated out
 
 | Model | MPK megakernel E2E | HF transformers E2E | Speedup |
 |---|---|---|---|
-| LFM2.5-230M | **30.9 ms** (±0.05) | 126.8 ms | **4.1x** |
-| LFM2.5-8B-A1B | 863 ms (±3) | 296.9 ms | 0.34x |
+| LFM2.5-230M (mbt=64) | 30.9 ms (±0.05) | 126.8 ms | 4.1x |
+| LFM2.5-230M (mbt=16) | **20.6 ms** (±0.04) | 126.8 ms | **6.2x** |
+| LFM2.5-8B-A1B (mbt=64) | 863 ms (±3) | 296.9 ms | 0.34x |
+| LFM2.5-8B-A1B (mbt=16) | **267 ms** (±0.7) | 296.9 ms | **1.11x** |
+
+`max_num_batched_tokens` (mbt) sizes the static task graph, so every decode
+step processes mbt batch rows even though only one is live — including the
+full-vocab lm-head GEMM. For latency-critical decode, set mbt to the
+smallest value that fits your prefill chunking appetite (output is
+byte-identical; a 32-token prompt just prefills in two 16-token chunks).
 
 The 230M runs ~0.94 ms per iteration — launch-overhead-free megakernel
 execution. The 8B is bound by the bf16 MoE group-GEMM (~26 ms/decode step),
@@ -89,3 +97,7 @@ one-time megakernel nvcc compile (~2-4 min per model/config).
   tile.
 - Attention QK-norm eps is hard-coded 1e-6 in-kernel (LFM2 uses 1e-5); the
   difference is far below bf16 resolution.
+- Corner: 230M at `max_num_batched_tokens=32` with a prompt of exactly 32
+  tokens hangs the persistent kernel (32 vs shorter prompts and mbt=16
+  full chunks are fine); untriaged upstream scheduler corner — avoid
+  prompt_len == mbt == 32 configs.
