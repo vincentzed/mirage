@@ -8,6 +8,8 @@
 #include "embedding.cuh"
 #include "identity.cuh"
 #include "lfm2_conv.cuh"
+#include "norm_linear_new.cuh"
+#include "silu_mul_linear.cuh"
 #include "multitoken_paged_attention.cuh"
 #include "reduction.cuh"
 #include "rmsnorm.cuh"

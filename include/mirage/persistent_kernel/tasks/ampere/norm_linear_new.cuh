@@ -14,15 +14,15 @@
  */
 
 #pragma once
-#include "common.h"
-#include "copy_sm80.cuh"
-#include "dmem_layout.cuh"
+#include "tasks/common/common_header.cuh"
+#include "tasks/common/copy_sm80.cuh"
+#include "tasks/common/dmem_layout.cuh"
 #include "element_binary.cuh"
 #include "element_unary.cuh"
 #include "mma.cuh"
 #include "reduction.cuh"
 #include "smem_layout.cuh"
-#include "utils.cuh"
+#include "tasks/common/utils.cuh"
 namespace kernel {
 
 using bfloat16 = type::bfloat16_t;
@@ -166,6 +166,9 @@ __device__ __forceinline__ void
   T *mul_output = (T *)(smem + MUL_OUTPUT_OFFSET);
   T *element_unary_output = (T *)(smem + ELEMENT_UNARY_OUTPUT_OFFSET);
   clear_smem_buffer<T, BATCH_SIZE * TILE_SIZE>(element_unary_output);
+  // the cleared accumulator is read/updated warp-crosswise below; without a
+  // barrier the first tile's accumulation races with other threads' clears
+  __syncthreads();
   T *mm_intermediate = (T *)(smem + MM_INTERMEDIATE_OFFSET);
   T *mm_output = (T *)(smem + MM_OUTPUT_OFFSET);
   T *reduction_output = (T *)(smem + REDUCTION_OUTPUT_OFFSET);
@@ -231,6 +234,7 @@ __device__ __forceinline__ void
 
     clear_smem_buffer<T, NUM_WARPS_K * BATCH_SIZE * OUTPUT_ATOM_SIZE>(
         mm_intermediate);
+    __syncthreads();
     MatMulIntermediateSmem mm_intermediate_smem(mm_intermediate);
 
     int warp_row = warp_idx >> log2_NUM_WARPS_N;

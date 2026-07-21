@@ -88,6 +88,28 @@ which upstream never perf-tuned (DeepSeek's production path is FP8); a tuned
 or FP8 expert GEMM is the clear next step. First-run cold cost is the
 one-time megakernel nvcc compile (~2-4 min per model/config).
 
+## Fused-kernel investigation (experimental, `LFM2_FUSED=1`)
+
+The builder can wire fused `rmsnorm_linear` (norm+GEMM at the qkv / conv
+in_proj / gate_up / lm-head sites) and `silu_mul_linear_with_residual`
+(SwiGLU tail), cutting the per-step critical path from ~8 to ~5 dependency
+stages per layer. This is OFF by default because both upstream kernels
+turned out to be orphaned dead code (no arch task_header included them, so
+they could never have compiled anywhere) with real defects:
+
+- `norm_linear_new.cuh`: missing barriers after `clear_smem_buffer` of the
+  sum-of-squares accumulator and the matmul intermediate (fixed here; took
+  the failure rate from ~50% to ~20%), plus at least one residual race
+  (~0.1-magnitude errors, run-dependent) still untriaged.
+- `silu_mul_linear.cuh`: grossly wrong outputs (max err 30-70, varies per
+  run) at LFM2 shapes; untriaged.
+- Codegen called `norm_linear_task_impl` with a `num_active_tokens` arg that
+  only `norm_linear_new.cuh` accepts, while no header included either file.
+
+`test_lfm2_fused_testmode.py` reproduces all of this. Once the kernels are
+fixed upstream, flip `LFM2_FUSED=1` (the builder wiring is complete and the
+fused rmsnorm eps is parametrized).
+
 ## Known limitations
 
 - Single GPU only (no TP sharding for LFM2 yet).

@@ -112,6 +112,12 @@ class Lfm2Builder(GraphBuilder):
             # debug aid: build only the first K layers (compare against an
             # identically truncated HF model)
             self.num_layers = min(self.num_layers, _trunc)
+        # EXPERIMENTAL (LFM2_FUSED=1): fuse rmsnorm+linear and
+        # silu_mul+down+residual to cut the per-iteration critical path.
+        # Off by default: the underlying orphaned kernels (norm_linear_new,
+        # silu_mul_linear) still have residual races upstream — see
+        # tests/runtime_python/test_mode/test_lfm2_fused_testmode.py.
+        self.fused = _os.environ.get("LFM2_FUSED", "0") == "1"
         self.layer_types = list(config.layer_types)
         self.conv_l = config.conv_L_cache
         assert not getattr(config, "conv_bias", False), \
@@ -182,6 +188,11 @@ class Lfm2Builder(GraphBuilder):
         self.mlp_out = new_tensor(
             dims=(mbt, self.hidden_size), dtype=bfloat16,
             name="mlp_out", io_category="cuda_tensor")
+        # second FFN output buffer for the fused path, so consecutive layers
+        # never read and write the same tensor
+        self.mlp_out_b = new_tensor(
+            dims=(mbt, self.hidden_size), dtype=bfloat16,
+            name="mlp_out_b", io_category="cuda_tensor")
         self.argmax_in = new_tensor(
             dims=(mbt, self.padded_vocab_size), dtype=bfloat16,
             name="argmax_in", io_category="cuda_tensor")
@@ -228,6 +239,18 @@ class Lfm2Builder(GraphBuilder):
             eps=self.norm_eps,
         )
 
+    def _norm_linear(self, w_norm, w_linear, output):
+        """Fused RMSNorm + linear from self.x into output."""
+        self.mpk.rmsnorm_linear_layer(
+            input=self.x,
+            weight_norm=w_norm,
+            weight_linear=w_linear,
+            output=output,
+            grid_dim=(grid_for_rmsnorm_linear_layer(w_linear.dim(0)), 1, 1),
+            block_dim=(128, 1, 1),
+            eps=self.norm_eps,
+        )
+
     def build_attention_mixer(self, i, prefix, state_dict):
         w_norm = self.mpk.attach_input(
             torch_tensor=state_dict[f"{prefix}operator_norm.weight"],
@@ -247,14 +270,17 @@ class Lfm2Builder(GraphBuilder):
             num_groups=self.num_local_kv_heads,
             name=f"layer_{i}_qkv_proj")
 
-        self._rmsnorm(w_norm)
-        self.mpk.linear_layer(
-            input=self.rmsnorm_out,
-            weight=w_qkv,
-            output=self.attn_in,
-            grid_dim=(grid_for_rmsnorm_linear_layer(w_qkv.dim(0)), 1, 1),
-            block_dim=(128, 1, 1),
-        )
+        if self.fused:
+            self._norm_linear(w_norm, w_qkv, self.attn_in)
+        else:
+            self._rmsnorm(w_norm)
+            self.mpk.linear_layer(
+                input=self.rmsnorm_out,
+                weight=w_qkv,
+                output=self.attn_in,
+                grid_dim=(grid_for_rmsnorm_linear_layer(w_qkv.dim(0)), 1, 1),
+                block_dim=(128, 1, 1),
+            )
 
         # NOTE: the attention kernel applies the per-head QK RMSNorm with a
         # hard-coded eps of 1e-6 while LFM2 uses 1e-5; the difference is far
@@ -310,14 +336,17 @@ class Lfm2Builder(GraphBuilder):
             num_groups=CONV_CHANNEL_GROUPS,
             name=f"layer_{i}_conv_in_proj")
 
-        self._rmsnorm(w_norm)
-        self.mpk.linear_layer(
-            input=self.rmsnorm_out,
-            weight=w_bcx,
-            output=self.conv_bcx,
-            grid_dim=(grid_for_rmsnorm_linear_layer(w_bcx.dim(0)), 1, 1),
-            block_dim=(128, 1, 1),
-        )
+        if self.fused:
+            self._norm_linear(w_norm, w_bcx, self.conv_bcx)
+        else:
+            self._rmsnorm(w_norm)
+            self.mpk.linear_layer(
+                input=self.rmsnorm_out,
+                weight=w_bcx,
+                output=self.conv_bcx,
+                grid_dim=(grid_for_rmsnorm_linear_layer(w_bcx.dim(0)), 1, 1),
+                block_dim=(128, 1, 1),
+            )
 
         conv_weight = state_dict[f"{prefix}conv.conv.weight"].view(
             self.hidden_size, self.conv_l)
@@ -346,6 +375,31 @@ class Lfm2Builder(GraphBuilder):
         w_norm = self.mpk.attach_input(
             torch_tensor=state_dict[f"{prefix}ffn_norm.weight"],
             name=f"layer_{i}_ffn_norm")
+        w_down = self.mpk.attach_input(
+            torch_tensor=state_dict[f"{prefix}feed_forward.w2.weight"],
+            name=f"layer_{i}_w2")
+        if self.fused:
+            # fused path: rmsnorm+gate_up GEMM, then silu*up+down GEMM+residual.
+            # The fused SwiGLU kernel expects the [gate | up] halves layout, so
+            # concatenate w1/w3 plainly instead of interleaving.
+            w_gatedup_t = torch.cat(
+                (state_dict[f"{prefix}feed_forward.w1.weight"],
+                 state_dict[f"{prefix}feed_forward.w3.weight"]), 0).contiguous()
+            self.shuffled_tensors[f"layer_{i}_gatedup_cat"] = w_gatedup_t
+            w_gatedup = self.mpk.attach_input(
+                torch_tensor=w_gatedup_t, name=f"layer_{i}_gatedup_cat")
+            self._norm_linear(w_norm, w_gatedup, self.mlp_mid)
+            mlp_out = self.mlp_out if i % 2 == 0 else self.mlp_out_b
+            self.mpk.silu_mul_linear_with_residual_layer(
+                input=self.mlp_mid,
+                weight=w_down,
+                residual=self.x,
+                output=mlp_out,
+                grid_dim=(self.hidden_size // 64, 1, 1),
+                block_dim=(128, 1, 1),
+            )
+            self.x = mlp_out
+            return
         w_gate = self.mpk.attach_input(
             torch_tensor=state_dict[f"{prefix}feed_forward.w1.weight"],
             name=f"layer_{i}_w1")
@@ -373,9 +427,6 @@ class Lfm2Builder(GraphBuilder):
             grid_dim=(rmsnorm_num_tasks // 2, 1, 1),
             block_dim=(128, 1, 1),
         )
-        w_down = self.mpk.attach_input(
-            torch_tensor=state_dict[f"{prefix}feed_forward.w2.weight"],
-            name=f"layer_{i}_w2")
         self._linear_with_residual_into_x(
             self.silu_mul_out, w_down, self.mlp_out)
 
@@ -438,8 +489,12 @@ class Lfm2Builder(GraphBuilder):
         w_norm = self.mpk.attach_input(
             torch_tensor=state_dict["model.embedding_norm.weight"],
             name="model_embedding_norm")
-        self._rmsnorm(w_norm)
-        if with_lm_head:
+        if with_lm_head and self.fused:
+            w_proj = self.mpk.attach_input(
+                torch_tensor=self.lm_head_weight, name="lm_head")
+            self._norm_linear(w_norm, w_proj, self.argmax_in)
+        elif with_lm_head:
+            self._rmsnorm(w_norm)
             w_proj = self.mpk.attach_input(
                 torch_tensor=self.lm_head_weight, name="lm_head")
             self.mpk.linear_layer(
@@ -449,6 +504,9 @@ class Lfm2Builder(GraphBuilder):
                 grid_dim=(grid_for_rmsnorm_linear_layer(w_proj.dim(0)), 1, 1),
                 block_dim=(128, 1, 1),
             )
+        else:
+            self._rmsnorm(w_norm)
+        if with_lm_head:
             self.mpk.argmax_partial_layer(
                 input=self.argmax_in,
                 output=(self.argmax_part_value, self.argmax_part_index),
