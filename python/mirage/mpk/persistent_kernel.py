@@ -691,23 +691,18 @@ class PersistentKernel:
         output: DTensor,
         grid_dim: tuple,
         block_dim: tuple,
-        eps: float = 1e-6,
     ):
         # Currently assume that the input/weight_linear/output are 2D tensors
         assert input.num_dims == 2
         assert weight_linear.num_dims == 2
         assert output.num_dims == 2
-        params = []
-        if eps != 1e-6:
-            import struct
-            params = [struct.unpack("i", struct.pack("f", eps))[0]]
         tb_graph = TBGraph(CyTBGraph(grid_dim, block_dim, 1, 64))
         tb_graph.new_input(input, (-1, -1, -1), 1, True)
         tb_graph.new_input(weight_norm, (-1, -1, -1), 0, True)
         tb_graph.new_input(weight_linear, (0, -1, -1), 1, True)
         tb_graph.new_input(output, (1, -1, -1), -1, True)
         self.kn_graph.customized([input, weight_norm, weight_linear, output], tb_graph)
-        self.kn_graph.register_task(tb_graph, "rmsnorm_linear", params)
+        self.kn_graph.register_task(tb_graph, "rmsnorm_linear")
 
     def attention_layer(
         self,

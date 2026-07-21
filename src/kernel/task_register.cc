@@ -250,12 +250,7 @@ int TaskRegister::register_dflash_kv_store_sm100_task(
 
 int TaskRegister::register_rmsnorm_linear_task(threadblock::Graph const &bgraph,
                                                std::vector<int> const &params) {
-  // params[0] (optional): eps float bits (defaults to 1e-6)
-  assert(params.size() <= 1);
-  float eps = 1e-6f;
-  if (params.size() == 1) {
-    memcpy(&eps, &params[0], sizeof(float));
-  }
+  assert(params.size() == 0);
   int batch_size = 0, output_size = 0, reduction_size = 0, output_stride = 0;
   std::vector<tb::TBInputOp *> input_ops;
   std::vector<tb::TBInputOp *> output_ops;
@@ -293,7 +288,7 @@ int TaskRegister::register_rmsnorm_linear_task(threadblock::Graph const &bgraph,
   code.e("    task_desc->input_ptrs[1],");
   code.e("    task_desc->input_ptrs[2],");
   code.e("    runtime_config.qo_indptr_buffer[MPK_MAX_NUM_BATCHED_REQUESTS],");
-  code.e("    $f,", eps);
+  code.e("    1e-6f,");
   code.e("    task_desc->output_ptrs[0]);");
   return register_task_variant(TASK_RMS_NORM_LINEAR, code.to_string());
 }
